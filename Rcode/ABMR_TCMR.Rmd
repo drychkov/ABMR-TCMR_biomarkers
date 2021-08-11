@@ -1,0 +1,307 @@
+---
+title: "analysis_v1"
+author: "Dmitry Rychkov"
+date: "3/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+source("functions.R")
+library("tidyverse")
+library("limma")
+library("siggenes")
+library("EnhancedVolcano")
+
+```
+
+# Loading the biopsy data
+
+```{r cars}
+ematWork = readRDS("../data_out/ematMerged_Norm_withSubclasses.rds")
+metaWork = read.csv("../data_out/samplesFull_updated.csv", stringsAsFactors = F, row.names = 1)
+
+s = intersect(colnames(ematWork), metaWork$sample)
+ematWork = ematWork[, s]
+metaWork = metaWork[s,]
+rm(s)
+
+metaWork$subclass2 = metaWork$subclass
+metaWork$subclass2 = ifelse(metaWork$classByIS == "hSTA/mAR", "hSTA/mAR", metaWork$subclass2)
+metaWork$subclass2 = ifelse(metaWork$classByIS == "hSTA/mSTA", "hSTA/mSTA", metaWork$subclass2)
+metaWork = metaWork[!metaWork$subclass2 %in% c("AR", "AR+CAN", "BL", "BL+CAN"),]
+
+ematWork = ematWork[,metaWork$sample]
+
+table(metaWork$subclass2)
+table(metaWork$classByIS)
+
+
+```
+
+# Designing the limma model
+```{r}
+# pheno = factor(metaWork[metaWork$subclass2 %in% c("ABMR", "TCMR") | metaWork$subclass2 == "hSTA/mSTA", "subclass2"], levels = c("mSTA", "ABMR", "TCMR"))
+metaWork$pheno = factor(metaWork$subclass2, levels = c("hSTA/mSTA", "hSTA/mAR", "ABMR", "Mixed", "Normal", "TCMR"))
+
+design = model.matrix(~pheno, metaWork)
+colnames(design)[2] = "phenohSTA.mAR" 
+
+fit <- lmFit(ematWork, design)
+fit2 <- eBayes(fit)
+```
+
+# ABMR vs hSTA/mSTA
+
+```{r}
+
+# SAM
+meta = metaWork %>% filter(pheno %in% c("ABMR", "hSTA/mSTA"))
+emat = ematWork[,meta$sample]
+cl = as.numeric(factor(meta$pheno, levels = c("hSTA/mSTA", "ABMR")))
+
+sam.out <- sam(emat, cl, rand = 123, gene.names = rownames(emat))
+
+# d = findDelta(object = sam.out, fdr = 0.05)[2,1]
+res.sam = summary(object = sam.out, delta = 0.1)@mat.sig
+res.sam$logFC = log2(res.sam$R.fold)
+res.sam = res.sam[order(-res.sam$logFC),]
+res.sam$FC_round = round(res.sam$R.fold, 2)
+
+write.csv(res.sam, "../data_out/DEgenes_sam_ABMRvSTA.csv")
+
+# Limma 
+res = topTable(fit2, coef = "phenoABMR", adjust.method = "BH", 
+               sort.by = "logFC", p.value = 1, number = nrow(ematWork), 
+               genelist = rownames(ematWork))
+
+res = res[order(-res$logFC),]
+res$FC = 2^res$logFC
+res$FC_round = round(res$FC, 2)
+
+write.csv(res, file = "../data_out/DEgenes_limma_ABMRvSTA.csv")
+
+
+s = intersect(res$ID, rownames(res.sam))
+cor(res[s,"logFC"], res.sam[s,"logFC"]) # =1
+
+```
+
+
+```{r}
+res.ABMR <- res
+res.ABMR <- res.sam
+
+fc = 1.3
+genesABMR.up = res.ABMR[res.ABMR$FC_round >= fc,]
+genesABMR.down = res.ABMR[res.ABMR$FC_round <=  round(1/fc,2), ]
+genesABMR = rbind(genesABMR.up, genesABMR.down)
+genesABMR.down = genesABMR.down[order(genesABMR.down$FC_round),]
+
+nrow(genesABMR)
+
+# genesABMRup = rownames(genesABMR.up)
+# genesABMRdown = rownames(genesABMR.down)
+# genesABMR = c(genesABMRup, genesABMRdown)
+
+```
+
+```{r}
+
+plotHeatmap(ematWork[genesABMR, ], 
+            metaWork[metaWork$subclass2 %in% c("ABMR", "hSTA/mSTA"),], 
+            rowNames = F, classes = "subclass2", colSplit = 3)
+plotUMAP(ematWork[genesABMR, ], metaWork[metaWork$subclass2 %in% c("ABMR", "hSTA/mSTA"),], class = "subclass2", n = 30, pointSize = 2)
+
+
+EnhancedVolcano(toptable = res.ABMR,
+                lab = res.ABMR$ID,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                pCutoff = 0.05,
+                FCcutoff = log2(1.3),
+                xlim = c(-0.75, 1.5))
+```
+
+
+
+# TCMR vs hSTA/mSTA
+
+```{r}
+
+# SAM
+meta = metaWork %>% filter(pheno %in% c("TCMR", "hSTA/mSTA"))
+emat = ematWork[,meta$sample]
+cl = as.numeric(factor(meta$pheno, levels = c("hSTA/mSTA", "TCMR")))
+
+sam.out <- sam(emat, cl, rand = 123, gene.names = rownames(emat))
+
+# d = findDelta(object = sam.out, fdr = 0.05)[2,1]
+res.sam = summary(object = sam.out, delta = 0.1)@mat.sig
+res.sam$logFC = log2(res.sam$R.fold)
+res.sam = res.sam[order(-res.sam$logFC),]
+res.sam$FC_round = round(res.sam$R.fold, 2)
+
+write.csv(res.sam, "../data_out/DEgenes_sam_TCMRvSTA.csv")
+
+# Limma 
+res = topTable(fit2, coef = "phenoTCMR", adjust.method = "BH", 
+               sort.by = "logFC", p.value = 1, number = nrow(ematWork), 
+               genelist = rownames(ematWork))
+
+res = res[order(-res$logFC),]
+res$FC = 2^res$logFC
+res$FC_round = round(res$FC, 2)
+
+write.csv(res, file = "../data_out/DEgenes_limma_TCMRvSTA.csv")
+
+s = intersect(res$ID, rownames(res.sam))
+cor(res[s,"logFC"], res.sam[s,"logFC"]) # =1
+
+```
+
+```{r}
+res.TCMR <- res
+res.TCMR <- res.sam
+
+fc = 1.3
+genesTCMR.up = res.TCMR[res.TCMR$FC_round >= fc,]
+genesTCMR.down = res.TCMR[res.TCMR$FC_round <=  round(1/fc,2), ]
+genesTCMR = rbind(genesTCMR.up, genesTCMR.down)
+genesTCMR.down = genesTCMR.down[order(genesTCMR.down$FC_round),]
+
+nrow(genesTCMR)
+
+xlsx::write.xlsx(x = genesTCMR.up, file = "../data_out/DEgenes_TCMRvSTA_FC13.xlsx", sheetName = "up-reg")
+xlsx::write.xlsx(x = genesTCMR.down, file = "../data_out/DEgenes_TCMRvSTA_FC13.xlsx", sheetName = "down-reg", append = T)
+
+
+genesTCMRup = rownames(genesTCMR.up)
+genesTCMRdown = rownames(genesTCMR.down)
+genesTCMR = c(genesTCMRup, genesTCMRdown)
+
+```
+
+
+```{r}
+
+plotHeatmap(ematWork[genesTCMR, ], 
+            metaWork[metaWork$subclass2 %in% c("TCMR", "hSTA/mSTA"),], 
+            rowNames = F, classes = "subclass2", colSplit = 3)
+plotUMAP(ematWork[genesTCMR, ], metaWork[metaWork$subclass2 %in% c("TCMR", "hSTA/mSTA"),], class = "subclass2", n = 30, pointSize = 2)
+
+EnhancedVolcano(toptable = res.TCMR,
+                lab = res.TCMR$ID,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                pCutoff = 0.05,
+                FCcutoff = log2(1.3),
+                xlim = c(-1.2, 2.6))
+```
+
+
+# ABMR vs TCMR
+
+```{r}
+# SAM
+meta = metaWork %>% filter(pheno %in% c("TCMR", "ABMR"))
+emat = ematWork[,meta$sample]
+cl = as.numeric(factor(meta$pheno, levels = c("TCMR", "ABMR")))
+
+sam.out <- sam(emat, cl, rand = 123, gene.names = rownames(emat))
+
+# d = findDelta(object = sam.out, fdr = 0.05)[2,1]
+res.sam = summary(object = sam.out, delta = 0.1)@mat.sig
+res.sam$logFC = log2(res.sam$R.fold)
+res.sam = res.sam[order(-res.sam$logFC),]
+res.sam$FC_round = round(res.sam$R.fold, 2)
+
+write.csv(res.sam, "../data_out/DEgenes_sam_ABMRvTCMR.csv")
+
+# Limma
+contrast.matrix = makeContrasts(phenoABMR - phenoTCMR,
+                                levels = design)
+colnames(contrast.matrix) = "ABMRvsTCMR"
+fit.contrast = contrasts.fit(fit, contrast.matrix)
+efit.contrast = eBayes(fit.contrast)
+
+res = topTable(efit.contrast, coef = "ABMRvsTCMR", adjust.method = "BH", 
+               sort.by = "logFC", p.value = 0.05, number = nrow(ematWork), 
+               genelist = rownames(ematWork))
+
+res = res[order(-res$logFC),]
+res$FC = 2^res$logFC
+res$FC_round = round(2^res$logFC, 2)
+
+write.csv(res, file = "../data_out/DEgenes_limma_ABMRvTCMR.csv")
+
+s = intersect(res$ID, rownames(res.sam))
+cor(res[s,"logFC"], res.sam[s,"logFC"]) # =1
+
+```
+
+```{r}
+res.ABMRvTCMR <- res
+res.ABMRvTCMR <- res.sam
+
+fc = 1.3
+genesABMRvTCMR.up = res.ABMRvTCMR[res.ABMRvTCMR$FC_round >= fc,]
+genesABMRvTCMR.down = res.ABMRvTCMR[res.ABMRvTCMR$FC_round <=  round(1/fc,2), ]
+genesABMRvTCMR = rbind(genesABMRvTCMR.up, genesABMRvTCMR.down)
+genesABMRvTCMR.down = genesABMRvTCMR.down[order(genesABMRvTCMR.down$FC_round),]
+
+nrow(genesABMRvTCMR)
+
+xlsx::write.xlsx(x = genesABMRvTCMR.up, file = "../data_out/DEgenes_ABMRvTCMR_FC13.xlsx", sheetName = "up-reg")
+xlsx::write.xlsx(x = genesABMRvTCMR.down, file = "../data_out/DEgenes_ABMRvTCMR_FC13.xlsx", sheetName = "down-reg", append = T)
+
+
+genesABMRvTCMRup = rownames(genesABMRvTCMR.up)
+genesABMRvTCMRdown = rownames(genesABMRvTCMR.down)
+genesABMRvTCMR = c(genesABMRvTCMRup, genesABMRvTCMRdown)
+
+```
+
+```{r}
+plotHeatmap(ematWork[genesABMRvTCMR, ], 
+            metaWork[metaWork$subclass2 %in% c("TCMR", "ABMR"),], 
+            rowNames = F, classes = "subclass2", colSplit = 3)
+plotUMAP(ematWork[genesABMRvTCMR, ], metaWork[metaWork$subclass2 %in% c("TCMR", "ABMR"),], class = "subclass2", n = 10, pointSize = 2)
+
+EnhancedVolcano(toptable = res.ABMRvTCMR,
+                lab = res.ABMRvTCMR$ID,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                pCutoff = 0.05,
+                FCcutoff = log2(1.3),
+                xlim = c(-1.4, 0.8))
+```
+
+```{r}
+
+geneList = list(AvT = rownames(genesABMRvTCMR),
+              AvS = rownames(genesABMR),
+              TvS = rownames(genesTCMR))
+plotVenn(geneList)
+
+
+AvT.up = rownames(genesABMRvTCMR.up)[rownames(genesABMRvTCMR.up) %in% c(rownames(genesTCMR), rownames(genesABMR))]
+AvT.down = rownames(genesABMRvTCMR.down)[rownames(genesABMRvTCMR.down) %in% c(rownames(genesTCMR), rownames(genesABMR))]
+AvT = c(AvT.up, AvT.down)
+
+
+plotHeatmap(ematWork[AvT, ], 
+            metaWork[metaWork$subclass2 %in% c("TCMR", "ABMR", "hSTA/mSTA"),], 
+            rowNames = F, classes = "subclass", colSplit = 3, rowSplit = 1, method = "ward.D")
+
+plotUMAP(ematWork[AvT, ], 
+            metaWork[metaWork$subclass2 %in% c("TCMR", "ABMR", "hSTA/mSTA"),], class = "subclass", n = 10, pointSize = 3)
+
+plotPCA(ematWork[AvT, ], 
+            metaWork[metaWork$subclass2 %in% c("TCMR", "ABMR", "hSTA/mSTA"),], interest = "subclass", alpha = 0.7, pointSize = 2)
+
+```
+
